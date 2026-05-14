@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -107,7 +108,9 @@ class _CctvHomePageState extends State<CctvHomePage> {
   bool _isPlaying = false;
   bool _isScanning = false;
   bool _isAutoTrying = false;
+  bool _isDiagnosing = false;
   final List<String> _foundCameraIps = [];
+  final List<String> _debugLogs = [];
   String _status = 'Belum terhubung';
 
   @override
@@ -117,9 +120,11 @@ class _CctvHomePageState extends State<CctvHomePage> {
     if (widget.enableVideo) {
       _player = Player();
       _videoController = VideoController(_player!);
+      _addDebugLog('MediaKit player initialized');
       _subscriptions
         ..add(
           _player!.stream.buffering.listen((isBuffering) {
+            _addDebugLog('player.buffering=$isBuffering');
             if (mounted && isBuffering) {
               setState(() => _status = 'Buffering stream kamera...');
             }
@@ -127,6 +132,7 @@ class _CctvHomePageState extends State<CctvHomePage> {
         )
         ..add(
           _player!.stream.error.listen((error) {
+            _addDebugLog('player.error=$error');
             if (mounted) {
               setState(() {
                 _isPlaying = false;
@@ -137,6 +143,7 @@ class _CctvHomePageState extends State<CctvHomePage> {
         )
         ..add(
           _player!.stream.playing.listen((isPlaying) {
+            _addDebugLog('player.playing=$isPlaying');
             if (mounted && isPlaying) {
               setState(() => _status = 'Stream berjalan, menunggu frame...');
             }
@@ -173,6 +180,7 @@ class _CctvHomePageState extends State<CctvHomePage> {
     }
 
     final url = _urlController.text.trim();
+    _addDebugLog('connect url=${_maskUrl(url)}');
     if (url.isEmpty) {
       setState(() => _status = 'Masukkan URL RTSP terlebih dahulu');
       return false;
@@ -185,9 +193,11 @@ class _CctvHomePageState extends State<CctvHomePage> {
 
     try {
       await player.open(Media(url), play: true);
+      _addDebugLog('connect open() returned successfully');
       setState(() => _status = 'Live: $url');
       return true;
     } catch (error) {
+      _addDebugLog('connect failed: $error');
       setState(() {
         _isPlaying = false;
         _status = 'Gagal membuka stream: $error';
@@ -208,6 +218,7 @@ class _CctvHomePageState extends State<CctvHomePage> {
     }
 
     setState(() => _isAutoTrying = true);
+    _addDebugLog('auto preset started');
 
     try {
       for (final preset in _rtspPresets) {
@@ -216,12 +227,16 @@ class _CctvHomePageState extends State<CctvHomePage> {
         }
 
         _urlController.text = _buildRtspUrl(preset.path);
+        _addDebugLog(
+          'auto try "${preset.label}" url=${_maskUrl(_urlController.text)}',
+        );
         setState(() {
           _status = 'Mencoba ${preset.label}...';
           _isPlaying = true;
         });
 
         final result = await _tryOpenForAutoConnect(player);
+        _addDebugLog('auto result "${preset.label}" success=$result');
         if (result) {
           if (mounted) {
             setState(() => _status = 'Berhasil dengan ${preset.label}');
@@ -231,6 +246,7 @@ class _CctvHomePageState extends State<CctvHomePage> {
       }
 
       if (mounted) {
+        _addDebugLog('auto preset finished: all presets failed');
         setState(() {
           _isPlaying = false;
           _status =
@@ -266,9 +282,13 @@ class _CctvHomePageState extends State<CctvHomePage> {
       await player.open(Media(_urlController.text.trim()), play: true);
       return await completer.future.timeout(
         const Duration(seconds: 5),
-        onTimeout: () => false,
+        onTimeout: () {
+          _addDebugLog('auto timeout waiting for playing event');
+          return false;
+        },
       );
-    } catch (_) {
+    } catch (error) {
+      _addDebugLog('auto open exception: $error');
       return false;
     } finally {
       await errorSub.cancel();
@@ -277,11 +297,109 @@ class _CctvHomePageState extends State<CctvHomePage> {
   }
 
   Future<void> _stop() async {
+    _addDebugLog('stop requested');
     await _player?.stop();
     setState(() {
       _isPlaying = false;
       _status = 'Stream dihentikan';
     });
+  }
+
+  Future<void> _diagnoseRtsp() async {
+    if (_isDiagnosing) {
+      return;
+    }
+
+    final url = _urlController.text.trim();
+    if (url.isEmpty) {
+      setState(() => _status = 'Masukkan URL RTSP terlebih dahulu');
+      return;
+    }
+
+    setState(() {
+      _isDiagnosing = true;
+      _status = 'Diagnosa RTSP...';
+    });
+    _addDebugLog('diagnose start url=${_maskUrl(url)}');
+
+    try {
+      final uri = Uri.parse(url);
+      final host = uri.host;
+      final port = uri.hasPort ? uri.port : 554;
+      final target = _rtspRequestTarget(uri);
+      final username = uri.userInfo.split(':').first;
+      final password = uri.userInfo.contains(':')
+          ? uri.userInfo.substring(uri.userInfo.indexOf(':') + 1)
+          : '';
+      final authHeader = username.isEmpty
+          ? ''
+          : 'Authorization: Basic ${base64Encode(utf8.encode('$username:$password'))}\r\n';
+
+      final socket = await Socket.connect(
+        host,
+        port,
+        timeout: const Duration(seconds: 4),
+      );
+      final response = StringBuffer();
+      final subscription = socket.listen((data) {
+        response.write(utf8.decode(data, allowMalformed: true));
+      });
+
+      socket.write(
+        'OPTIONS $target RTSP/1.0\r\n'
+        'CSeq: 1\r\n'
+        'User-Agent: MobileCctvCloud/1.0\r\n'
+        '\r\n',
+      );
+      socket.write(
+        'DESCRIBE $target RTSP/1.0\r\n'
+        'CSeq: 2\r\n'
+        'User-Agent: MobileCctvCloud/1.0\r\n'
+        'Accept: application/sdp\r\n'
+        '$authHeader'
+        '\r\n',
+      );
+      await socket.flush();
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await subscription.cancel();
+      socket.destroy();
+
+      final raw = response.toString().trim();
+      if (raw.isEmpty) {
+        _addDebugLog('diagnose response empty');
+        setState(() => _status = 'Diagnosa RTSP: tidak ada balasan');
+        return;
+      }
+
+      final lines = raw
+          .split(RegExp(r'\r?\n'))
+          .where((line) => line.trim().isNotEmpty)
+          .take(14)
+          .join(' | ');
+      _addDebugLog('diagnose response: $lines');
+
+      if (raw.contains('401')) {
+        setState(
+          () => _status =
+              'Diagnosa RTSP: 401 Unauthorized, username/password salah atau butuh Digest auth',
+        );
+      } else if (raw.contains('404')) {
+        setState(
+          () => _status = 'Diagnosa RTSP: 404 Not Found, path RTSP salah',
+        );
+      } else if (raw.contains('200 OK')) {
+        setState(() => _status = 'Diagnosa RTSP: 200 OK, path dikenali kamera');
+      } else {
+        setState(() => _status = 'Diagnosa RTSP: balasan kamera tidak umum');
+      }
+    } catch (error) {
+      _addDebugLog('diagnose failed: $error');
+      setState(() => _status = 'Diagnosa RTSP gagal: $error');
+    } finally {
+      if (mounted) {
+        setState(() => _isDiagnosing = false);
+      }
+    }
   }
 
   Future<void> _scanWifiNetwork() async {
@@ -293,6 +411,7 @@ class _CctvHomePageState extends State<CctvHomePage> {
     var localIp = await NetworkInfo().getWifiIP();
     localIp ??= _ipController.text.trim();
     final subnet = _subnetPrefix(localIp);
+    _addDebugLog('scan requested localIp=$localIp port=$port subnet=$subnet');
 
     if (subnet == null) {
       setState(() => _status = 'Tidak bisa membaca subnet WiFi perangkat');
@@ -330,9 +449,18 @@ class _CctvHomePageState extends State<CctvHomePage> {
           _status =
               'Scan WiFi $subnet.0/24... ditemukan ${found.length} kandidat';
         });
+        _addDebugLog(
+          'scan progress ${start.toString().padLeft(3, '0')}-$end found=${found.join(', ')}',
+        );
       }
     } finally {
       if (mounted) {
+        if (found.length == 1) {
+          _selectFoundIp(found.single, showStatus: false);
+        }
+        _addDebugLog(
+          'scan finished port=$port total=${found.length} found=${found.join(', ')}',
+        );
         setState(() {
           _isScanning = false;
           _status = found.isEmpty
@@ -351,6 +479,7 @@ class _CctvHomePageState extends State<CctvHomePage> {
         timeout: const Duration(milliseconds: 350),
       );
       socket.destroy();
+      _addDebugLog('port open $ip:$port');
       return ip;
     } catch (_) {
       return null;
@@ -387,13 +516,68 @@ class _CctvHomePageState extends State<CctvHomePage> {
   }
 
   void _useStream(String path) {
+    _preferSingleScannedIp();
     _urlController.text = _buildRtspUrl(path);
+    _addDebugLog(
+      'preset selected path=$path url=${_maskUrl(_urlController.text)}',
+    );
+  }
+
+  void _preferSingleScannedIp() {
+    if (_foundCameraIps.length == 1 &&
+        _ipController.text.trim() != _foundCameraIps.single) {
+      _selectFoundIp(_foundCameraIps.single, showStatus: false);
+    }
   }
 
   void _useFoundIp(String ip) {
+    _selectFoundIp(ip);
+  }
+
+  void _selectFoundIp(String ip, {bool showStatus = true}) {
     _ipController.text = ip;
     _urlController.text = _buildRtspUrl('/cam/realmonitor?channel=1&subtype=0');
-    setState(() => _status = 'IP $ip dipilih dari hasil scan WiFi');
+    _addDebugLog(
+      'found IP selected ip=$ip url=${_maskUrl(_urlController.text)}',
+    );
+    if (showStatus) {
+      setState(() => _status = 'IP $ip dipilih dari hasil scan WiFi');
+    }
+  }
+
+  void _clearDebugLogs() {
+    setState(_debugLogs.clear);
+    debugPrint('[MobileCctvCloud] debug logs cleared');
+  }
+
+  void _addDebugLog(String message) {
+    final timestamp = DateTime.now().toIso8601String().substring(11, 19);
+    final line = '$timestamp $message';
+    debugPrint('[MobileCctvCloud] $line');
+    if (!mounted) {
+      _debugLogs.add(line);
+      return;
+    }
+    setState(() {
+      _debugLogs.insert(0, line);
+      if (_debugLogs.length > 80) {
+        _debugLogs.removeLast();
+      }
+    });
+  }
+
+  String _maskUrl(String url) {
+    return url.replaceFirstMapped(
+      RegExp(r'rtsp://([^:@/]+):([^@/]+)@'),
+      (match) => 'rtsp://${match.group(1)}:***@',
+    );
+  }
+
+  String _rtspRequestTarget(Uri uri) {
+    final port = uri.hasPort ? ':${uri.port}' : '';
+    final path = uri.path.isEmpty ? '/' : uri.path;
+    final query = uri.hasQuery ? '?${uri.query}' : '';
+    return 'rtsp://${uri.host}$port$path$query';
   }
 
   String _buildRtspUrl(String path) {
@@ -461,6 +645,8 @@ class _CctvHomePageState extends State<CctvHomePage> {
                 color: _isPlaying ? colorScheme.primary : colorScheme.outline,
               ),
             ),
+            const SizedBox(height: 16),
+            _DebugLogPanel(logs: _debugLogs, onClear: _clearDebugLogs),
             const SizedBox(height: 16),
             TextField(
               controller: _ipController,
@@ -570,6 +756,17 @@ class _CctvHomePageState extends State<CctvHomePage> {
               ),
             ),
             const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _isDiagnosing ? null : _diagnoseRtsp,
+              icon: _isDiagnosing
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.bug_report_outlined),
+              label: Text(_isDiagnosing ? 'Diagnosa...' : 'Diagnosa RTSP'),
+            ),
+            const SizedBox(height: 12),
             FilledButton.icon(
               onPressed: _connect,
               icon: const Icon(Icons.play_arrow_rounded),
@@ -647,6 +844,67 @@ class _RtspPreset {
   final String label;
   final String path;
   final IconData icon;
+}
+
+class _DebugLogPanel extends StatelessWidget {
+  const _DebugLogPanel({required this.logs, required this.onClear});
+
+  final List<String> logs;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFF121715),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Debug Log',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: logs.isEmpty ? null : onClear,
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: const Text('Clear'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 220),
+              child: SingleChildScrollView(
+                reverse: true,
+                child: SelectableText(
+                  logs.isEmpty ? 'Belum ada log.' : logs.reversed.join('\n'),
+                  style: const TextStyle(
+                    color: Color(0xFFE3ECE7),
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ConnectionNotes extends StatelessWidget {
