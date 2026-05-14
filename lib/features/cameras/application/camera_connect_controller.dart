@@ -30,7 +30,13 @@ class CameraConnectController extends Notifier<CameraConnectState> {
   CameraConnectState build() {
     final initial = CameraConnectState.initial();
     if (ref.watch(videoEnabledProvider)) {
-      _player = Player();
+      _player = Player(
+        configuration: const PlayerConfiguration(
+          bufferSize: 512 * 1024,
+          title: 'Mobile CCTV Cloud',
+        ),
+      );
+      unawaited(_player!.setVolume(initial.volume));
       final videoController = VideoController(_player!);
       _listenToPlayer();
       ref.onDispose(_disposePlayer);
@@ -64,10 +70,37 @@ class CameraConnectController extends Notifier<CameraConnectState> {
     state = state.copyWith(rtspUrl: value);
   }
 
+  Future<void> setMuted(bool value) async {
+    final effectiveVolume = value ? 0.0 : state.volume;
+    await _player?.setVolume(effectiveVolume);
+    state = state.copyWith(isMuted: value);
+    _addLog('audio muted=$value volume=${effectiveVolume.round()}');
+  }
+
+  Future<void> setVolume(double value) async {
+    final volume = value.clamp(0, 100).toDouble();
+    await _player?.setVolume(state.isMuted ? 0 : volume);
+    state = state.copyWith(volume: volume, isMuted: volume == 0);
+    _addLog('audio volume=${volume.round()}');
+  }
+
+  void setZoom(double value) {
+    final zoom = value.clamp(1, 4).toDouble();
+    state = state.copyWith(zoom: zoom);
+  }
+
+  void selectHdStream() {
+    _selectQualityStream(quality: 'HD', subtype: '0');
+  }
+
+  void selectSdStream() {
+    _selectQualityStream(quality: 'SD', subtype: '1');
+  }
+
   void selectPreset(RtspPreset preset) {
     _preferSingleScannedIp();
     final url = _buildRtspUrl(preset.path);
-    state = state.copyWith(rtspUrl: url);
+    state = state.copyWith(rtspUrl: url, quality: _qualityFromPreset(preset));
     _addLog('preset selected path=${preset.path} url=${_maskUrl(url)}');
   }
 
@@ -221,6 +254,7 @@ class CameraConnectController extends Notifier<CameraConnectState> {
     state = state.copyWith(status: '$statusPrefix...', isPlaying: true);
 
     try {
+      await player.setVolume(state.isMuted ? 0 : state.volume);
       await player.open(Media(url), play: true);
       _addLog('connect open() returned successfully');
       state = state.copyWith(status: 'Live: $url');
@@ -250,6 +284,7 @@ class CameraConnectController extends Notifier<CameraConnectState> {
     });
 
     try {
+      await player.setVolume(state.isMuted ? 0 : state.volume);
       await player.open(Media(url), play: true);
       await Future<void>.delayed(const Duration(seconds: 4));
       return hasStartedPlaying && !hasError;
@@ -290,6 +325,46 @@ class CameraConnectController extends Notifier<CameraConnectState> {
             );
           }
         }),
+      )
+      ..add(
+        _player!.stream.width.listen((width) {
+          _updateResolution(width: width);
+        }),
+      )
+      ..add(
+        _player!.stream.height.listen((height) {
+          _updateResolution(height: height);
+        }),
+      )
+      ..add(
+        _player!.stream.audioBitrate.listen((bitrate) {
+          state = state.copyWith(audioKbps: _bitsToKbps(bitrate));
+        }),
+      )
+      ..add(
+        _player!.stream.tracks.listen((tracks) {
+          final videoKbps = tracks.video
+              .map((track) => track.bitrate)
+              .whereType<int>()
+              .fold<int>(0, (current, next) => next > current ? next : current);
+          final audioKbps = tracks.audio
+              .map((track) => track.bitrate)
+              .whereType<int>()
+              .fold<int>(0, (current, next) => next > current ? next : current);
+          state = state.copyWith(
+            audioAvailable: tracks.audio.length > 1,
+            videoKbps: videoKbps > 0
+                ? _bitsToKbps(videoKbps.toDouble())
+                : state.videoKbps,
+            audioKbps: audioKbps > 0
+                ? _bitsToKbps(audioKbps.toDouble())
+                : state.audioKbps,
+          );
+          _addLog(
+            'tracks video=${tracks.video.length} audio=${tracks.audio.length} '
+            'videoKbps=${state.videoKbps} audioKbps=${state.audioKbps}',
+          );
+        }),
       );
   }
 
@@ -320,6 +395,73 @@ class CameraConnectController extends Notifier<CameraConnectState> {
         state.ip.trim() != state.foundCameraIps.single) {
       selectFoundIp(state.foundCameraIps.single, showStatus: false);
     }
+  }
+
+  void _selectQualityStream({
+    required String quality,
+    required String subtype,
+  }) {
+    _preferSingleScannedIp();
+    final current = state.rtspUrl;
+    String path;
+
+    if (current.contains('/cam/realmonitor')) {
+      path = '/cam/realmonitor?channel=1&subtype=$subtype';
+    } else if (current.contains('/Streaming/Channels/')) {
+      path = subtype == '0'
+          ? '/Streaming/Channels/101'
+          : '/Streaming/Channels/102';
+    } else if (current.contains('/live/ch00_')) {
+      path = subtype == '0' ? '/live/ch00_1' : '/live/ch00_0';
+    } else {
+      path = subtype == '0'
+          ? '/cam/realmonitor?channel=1&subtype=0'
+          : '/cam/realmonitor?channel=1&subtype=1';
+    }
+
+    final url = _buildRtspUrl(path);
+    state = state.copyWith(rtspUrl: url, quality: quality);
+    _addLog('quality selected $quality url=${_maskUrl(url)}');
+  }
+
+  String _qualityFromPreset(RtspPreset preset) {
+    final label = preset.label.toLowerCase();
+    if (label.contains('sub') || label.contains('ringan')) {
+      return 'SD';
+    }
+    if (label.contains('main') ||
+        label.contains('utama') ||
+        label.contains('hd')) {
+      return 'HD';
+    }
+    return state.quality;
+  }
+
+  void _updateResolution({int? width, int? height}) {
+    final current = state.resolution.split('x');
+    final currentWidth = current.isNotEmpty
+        ? int.tryParse(current.first)
+        : null;
+    final currentHeight = current.length > 1
+        ? int.tryParse(current.last)
+        : null;
+    final nextWidth = width ?? currentWidth;
+    final nextHeight = height ?? currentHeight;
+
+    if (nextWidth == null ||
+        nextHeight == null ||
+        nextWidth <= 0 ||
+        nextHeight <= 0) {
+      return;
+    }
+    state = state.copyWith(resolution: '${nextWidth}x$nextHeight');
+  }
+
+  int _bitsToKbps(double? bitsPerSecond) {
+    if (bitsPerSecond == null || bitsPerSecond <= 0) {
+      return 0;
+    }
+    return (bitsPerSecond / 1000).round();
   }
 
   String _buildRtspUrl(String path, {String? ipOverride}) {
