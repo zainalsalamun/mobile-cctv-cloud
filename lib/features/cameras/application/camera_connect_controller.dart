@@ -6,7 +6,9 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:mobile_cctv_cloud/features/cameras/application/camera_connect_state.dart';
 import 'package:mobile_cctv_cloud/features/cameras/data/network_scanner.dart';
+import 'package:mobile_cctv_cloud/features/cameras/data/onvif_discovery_service.dart';
 import 'package:mobile_cctv_cloud/features/cameras/data/rtsp_diagnostics_service.dart';
+import 'package:mobile_cctv_cloud/features/cameras/domain/discovered_camera.dart';
 import 'package:mobile_cctv_cloud/features/cameras/domain/rtsp_preset.dart';
 
 final videoEnabledProvider = Provider<bool>((ref) => true);
@@ -15,6 +17,9 @@ final networkScannerProvider = Provider<NetworkScanner>(
 );
 final rtspDiagnosticsProvider = Provider<RtspDiagnosticsService>(
   (ref) => RtspDiagnosticsService(),
+);
+final onvifDiscoveryProvider = Provider<OnvifDiscoveryService>(
+  (ref) => OnvifDiscoveryService(),
 );
 
 final cameraConnectControllerProvider =
@@ -117,44 +122,84 @@ class CameraConnectController extends Notifier<CameraConnectState> {
     _addLog('found IP selected ip=$ip url=${_maskUrl(url)}');
   }
 
+  void selectDiscoveredCamera(DiscoveredCamera camera) {
+    if (camera.port != null) {
+      state = state.copyWith(port: camera.port.toString());
+    }
+    selectFoundIp(camera.ip);
+    _addLog(
+      'device selected source=${camera.source.name} ip=${camera.ip} port=${camera.port ?? '-'}',
+    );
+  }
+
   Future<void> scanWifiNetwork() async {
     if (state.isScanning) {
       return;
     }
 
-    final port = int.tryParse(state.port.trim()) ?? 554;
+    final preferredPort = int.tryParse(state.port.trim()) ?? 554;
+    final ports = {preferredPort, 554, 8554, 5544}.toList();
     state = state.copyWith(
       isScanning: true,
+      discoveredCameras: [],
       foundCameraIps: [],
-      status: 'Scan WiFi pada port $port...',
+      status: 'Universal Connect: cari CCTV di jaringan...',
     );
 
     try {
-      final result = await ref
-          .read(networkScannerProvider)
-          .scanRtspDevices(
-            port: port,
-            fallbackLocalIp: state.ip,
-            onLog: _addLog,
-            onProgress: (progress) {
-              state = state.copyWith(
-                foundCameraIps: progress.foundIps,
-                status:
-                    'Scan WiFi... ditemukan ${progress.foundIps.length} kandidat',
-              );
-            },
-          );
+      final discovered = <String, DiscoveredCamera>{};
+      final onvifDevices = await ref
+          .read(onvifDiscoveryProvider)
+          .discover(onLog: _addLog);
+      for (final device in onvifDevices) {
+        discovered[device.ip] = device;
+      }
+      _publishDiscovered(discovered.values);
 
-      if (result.foundIps.length == 1) {
-        selectFoundIp(result.foundIps.single, showStatus: false);
+      for (final port in ports) {
+        final result = await ref
+            .read(networkScannerProvider)
+            .scanRtspDevices(
+              port: port,
+              fallbackLocalIp: state.ip,
+              onLog: _addLog,
+              onProgress: (progress) {
+                final mergedIps = {
+                  ...discovered.keys,
+                  ...progress.foundIps,
+                }.toList();
+                state = state.copyWith(
+                  foundCameraIps: mergedIps,
+                  status:
+                      'Universal Connect... ditemukan ${mergedIps.length} kandidat',
+                );
+              },
+            );
+        for (final device in result.foundDevices) {
+          discovered['${device.ip}:${device.port}'] = device;
+        }
+        _publishDiscovered(discovered.values);
       }
 
+      final uniqueIps = _uniqueIps(discovered.values);
+      if (uniqueIps.length == 1) {
+        final firstDevice = discovered.values.firstWhere(
+          (device) => device.ip == uniqueIps.single,
+        );
+        if (firstDevice.port != null) {
+          state = state.copyWith(port: firstDevice.port.toString());
+        }
+        selectFoundIp(uniqueIps.single, showStatus: false);
+      }
+
+      final total = uniqueIps.length;
       state = state.copyWith(
         isScanning: false,
-        foundCameraIps: result.foundIps,
-        status: result.foundIps.isEmpty
-            ? 'Tidak ada perangkat RTSP di port $port. Coba port 5544 atau cek CCTV sudah satu WiFi.'
-            : 'Scan selesai: ${result.foundIps.length} kandidat kamera ditemukan',
+        discoveredCameras: discovered.values.toList(),
+        foundCameraIps: uniqueIps,
+        status: total == 0
+            ? 'Tidak ada CCTV ONVIF/RTSP ditemukan. Pastikan CCTV satu WiFi dan ONVIF/RTSP aktif.'
+            : 'Universal Connect selesai: $total kandidat kamera ditemukan',
       );
     } catch (error) {
       _addLog('scan failed: $error');
@@ -395,6 +440,22 @@ class CameraConnectController extends Notifier<CameraConnectState> {
         state.ip.trim() != state.foundCameraIps.single) {
       selectFoundIp(state.foundCameraIps.single, showStatus: false);
     }
+  }
+
+  void _publishDiscovered(Iterable<DiscoveredCamera> devices) {
+    final list = devices.toList();
+    state = state.copyWith(
+      discoveredCameras: list,
+      foundCameraIps: _uniqueIps(list),
+    );
+  }
+
+  List<String> _uniqueIps(Iterable<DiscoveredCamera> devices) {
+    final ips = <String>{};
+    for (final device in devices) {
+      ips.add(device.ip);
+    }
+    return ips.toList();
   }
 
   void _selectQualityStream({
