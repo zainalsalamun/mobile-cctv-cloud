@@ -100,20 +100,28 @@ class _SmartConnectPageState extends ConsumerState<SmartConnectPage> {
                     )
                   : const Icon(Icons.wifi_find_outlined),
               label: Text(
-                state.isScanning ? 'Mencari CCTV...' : 'Cari CCTV di WiFi',
+                state.isScanning ? 'Mencari CCTV...' : 'Universal Connect',
               ),
             ),
-            if (state.foundCameraIps.isNotEmpty) ...[
+            if (state.discoveredCameras.isNotEmpty) ...[
               const SizedBox(height: 12),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final ip in state.foundCameraIps)
+                  for (final camera in state.discoveredCameras)
                     ActionChip(
-                      avatar: const Icon(Icons.router_outlined, size: 18),
-                      label: Text(ip),
-                      onPressed: () => controller.selectFoundIp(ip),
+                      avatar: Icon(
+                        camera.source.name == 'onvif'
+                            ? Icons.travel_explore_outlined
+                            : Icons.router_outlined,
+                        size: 18,
+                      ),
+                      label: Text(
+                        '${camera.label} ${camera.source.name.toUpperCase()}',
+                      ),
+                      onPressed: () =>
+                          controller.selectDiscoveredCamera(camera),
                     ),
                 ],
               ),
