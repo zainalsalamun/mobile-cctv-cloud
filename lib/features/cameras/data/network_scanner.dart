@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:network_info_plus/network_info_plus.dart';
 
+import 'package:mobile_cctv_cloud/features/cameras/domain/discovered_camera.dart';
+
 class ScanProgress {
   const ScanProgress({
     required this.rangeStart,
@@ -20,12 +22,14 @@ class WifiScanResult {
     required this.subnet,
     required this.port,
     required this.foundIps,
+    this.foundDevices = const [],
   });
 
   final String localIp;
   final String subnet;
   final int port;
   final List<String> foundIps;
+  final List<DiscoveredCamera> foundDevices;
 }
 
 class NetworkScanner {
@@ -47,6 +51,7 @@ class NetworkScanner {
 
     onLog('scan requested localIp=$localIp port=$port subnet=$subnet');
     final found = <String>[];
+    final devices = <DiscoveredCamera>[];
 
     for (var start = 1; start <= 254; start += 32) {
       final end = (start + 31).clamp(1, 254);
@@ -62,6 +67,15 @@ class NetworkScanner {
 
       final results = await Future.wait(checks);
       found.addAll(results.whereType<String>());
+      for (final ip in results.whereType<String>()) {
+        devices.add(
+          DiscoveredCamera(
+            ip: ip,
+            source: CameraDiscoverySource.rtsp,
+            port: port,
+          ),
+        );
+      }
       onProgress(
         ScanProgress(rangeStart: start, rangeEnd: end, foundIps: [...found]),
       );
@@ -78,6 +92,7 @@ class NetworkScanner {
       subnet: subnet,
       port: port,
       foundIps: found,
+      foundDevices: devices,
     );
   }
 
