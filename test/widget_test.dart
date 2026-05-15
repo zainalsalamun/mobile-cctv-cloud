@@ -7,13 +7,22 @@ void main() {
     await tester.pumpWidget(const MobileCctvCloudApp(enableVideo: false));
 
     expect(find.text('Mobile CCTV Cloud'), findsOneWidget);
-    expect(find.text('Debug Log'), findsOneWidget);
-    await tester.drag(find.byType(ListView), const Offset(0, -240));
-    await tester.pumpAndSettle();
+    expect(find.text('HD'), findsOneWidget);
+    expect(find.text('SD'), findsOneWidget);
+    expect(find.text('Resolusi -'), findsOneWidget);
 
+    await tester.drag(
+      find.byKey(const Key('smart-connect-scroll')),
+      const Offset(0, -720),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Debug Log'), findsOneWidget);
     expect(find.text('IP kamera'), findsOneWidget);
 
-    await tester.drag(find.byType(ListView), const Offset(0, -980));
+    await tester.drag(
+      find.byKey(const Key('smart-connect-scroll')),
+      const Offset(0, -980),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('EYESEC Dahua main'), findsOneWidget);
