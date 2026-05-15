@@ -1,4 +1,5 @@
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:mobile_cctv_cloud/features/cameras/domain/discovered_camera.dart';
 
 class CameraConnectState {
   const CameraConnectState({
@@ -21,6 +22,7 @@ class CameraConnectState {
     this.resolution = '-',
     this.audioAvailable = false,
     this.videoController,
+    this.discoveredCameras = const [],
     this.foundCameraIps = const [],
     this.debugLogs = const [],
   });
@@ -55,6 +57,7 @@ class CameraConnectState {
   final String resolution;
   final bool audioAvailable;
   final VideoController? videoController;
+  final List<DiscoveredCamera> discoveredCameras;
   final List<String> foundCameraIps;
   final List<String> debugLogs;
 
@@ -78,6 +81,7 @@ class CameraConnectState {
     String? resolution,
     bool? audioAvailable,
     VideoController? videoController,
+    List<DiscoveredCamera>? discoveredCameras,
     List<String>? foundCameraIps,
     List<String>? debugLogs,
   }) {
@@ -101,6 +105,7 @@ class CameraConnectState {
       resolution: resolution ?? this.resolution,
       audioAvailable: audioAvailable ?? this.audioAvailable,
       videoController: videoController ?? this.videoController,
+      discoveredCameras: discoveredCameras ?? this.discoveredCameras,
       foundCameraIps: foundCameraIps ?? this.foundCameraIps,
       debugLogs: debugLogs ?? this.debugLogs,
     );
