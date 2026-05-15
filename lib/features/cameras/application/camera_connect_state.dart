@@ -12,6 +12,14 @@ class CameraConnectState {
     this.isScanning = false,
     this.isAutoTrying = false,
     this.isDiagnosing = false,
+    this.isMuted = false,
+    this.volume = 100,
+    this.zoom = 1,
+    this.quality = 'Auto',
+    this.videoKbps = 0,
+    this.audioKbps = 0,
+    this.resolution = '-',
+    this.audioAvailable = false,
     this.videoController,
     this.foundCameraIps = const [],
     this.debugLogs = const [],
@@ -38,6 +46,14 @@ class CameraConnectState {
   final bool isScanning;
   final bool isAutoTrying;
   final bool isDiagnosing;
+  final bool isMuted;
+  final double volume;
+  final double zoom;
+  final String quality;
+  final int videoKbps;
+  final int audioKbps;
+  final String resolution;
+  final bool audioAvailable;
   final VideoController? videoController;
   final List<String> foundCameraIps;
   final List<String> debugLogs;
@@ -53,6 +69,14 @@ class CameraConnectState {
     bool? isScanning,
     bool? isAutoTrying,
     bool? isDiagnosing,
+    bool? isMuted,
+    double? volume,
+    double? zoom,
+    String? quality,
+    int? videoKbps,
+    int? audioKbps,
+    String? resolution,
+    bool? audioAvailable,
     VideoController? videoController,
     List<String>? foundCameraIps,
     List<String>? debugLogs,
@@ -68,6 +92,14 @@ class CameraConnectState {
       isScanning: isScanning ?? this.isScanning,
       isAutoTrying: isAutoTrying ?? this.isAutoTrying,
       isDiagnosing: isDiagnosing ?? this.isDiagnosing,
+      isMuted: isMuted ?? this.isMuted,
+      volume: volume ?? this.volume,
+      zoom: zoom ?? this.zoom,
+      quality: quality ?? this.quality,
+      videoKbps: videoKbps ?? this.videoKbps,
+      audioKbps: audioKbps ?? this.audioKbps,
+      resolution: resolution ?? this.resolution,
+      audioAvailable: audioAvailable ?? this.audioAvailable,
       videoController: videoController ?? this.videoController,
       foundCameraIps: foundCameraIps ?? this.foundCameraIps,
       debugLogs: debugLogs ?? this.debugLogs,
